@@ -455,13 +455,18 @@ def require_password() -> bool:
         return True
     if st.session_state.get("authed"):
         return True
+
+    expected = str(pwd).strip()
     st.title("PhD Tracker")
-    entered = st.text_input("Пароль", type="password")
-    if st.button("Войти") and entered == str(pwd):
-        st.session_state["authed"] = True
-        st.rerun()
-    if entered:
-        st.error("Неверный пароль")
+    st.caption("Введите пароль из Streamlit Secrets → [auth] password")
+    with st.form("login_form"):
+        entered = st.text_input("Пароль", type="password")
+        submitted = st.form_submit_button("Войти")
+    if submitted:
+        if entered.strip() == expected:
+            st.session_state["authed"] = True
+            st.rerun()
+        st.error("Неверный пароль. Это не GitHub-токен ghp_..., а строка password из блока [auth].")
     return False
 
 
