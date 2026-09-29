@@ -7,8 +7,7 @@
     "supervisor": "Казаринов Никита Андреевич",
     "horizon_start": "2026-10-01",
     "horizon_end": "2028-09-30",
-    "seed_version": "2-years-no-nir-numerics",
-    "note": "Год 1 = официальные 1–2 годы ИПРА (скрины до апр. 2028). Год 2 = официальные 3–4 годы, сжатые в личный график до сен. 2028."
+    "seed_version": "2-years-no-nir-clean-ui"
   },
   "phases": [
     {

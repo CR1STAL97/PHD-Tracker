@@ -476,7 +476,6 @@ def main() -> None:
     conn = get_connection()
     with st.sidebar:
         st.markdown("### PhD Tracker")
-        st.caption("Год 1 = скрины 1–2 ИПРА · Год 2 = скрины 3–4")
         page = st.radio(
             "Раздел",
             [
@@ -489,10 +488,12 @@ def main() -> None:
             label_visibility="collapsed",
         )
         st.markdown("---")
-        meta = get_meta(conn)
         overall = weighted_progress(list_tasks(conn))
         st.metric("Общий прогресс", f"{overall:.0f}%")
-        st.caption(meta.get("note", ""))
+        if st.session_state.get("cloud_sync_error"):
+            st.error(f"Облако не сохранило: {st.session_state['cloud_sync_error']}")
+        elif cloud_configured() and st.session_state.get("cloud_sync_ok"):
+            st.caption("Облако: сохранено")
 
     if page == "Дашборд":
         page_dashboard(conn)

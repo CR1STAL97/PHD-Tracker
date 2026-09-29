@@ -244,16 +244,23 @@ def import_backup(conn: sqlite3.Connection, data: dict[str, Any]) -> None:
     conn.commit()
 
 
-def persist_cloud(conn: sqlite3.Connection) -> None:
-    """Push progress to GitHub Gist when cloud secrets are configured."""
+def persist_cloud(conn: sqlite3.Connection) -> str | None:
+    """Push progress to GitHub Gist when cloud secrets are configured.
+
+    Returns None on success / skipped, or error message string.
+    """
     try:
         from cloud_store import cloud_configured, save_progress_json
     except ImportError:
         from src.cloud_store import cloud_configured, save_progress_json  # type: ignore
 
     if not cloud_configured():
-        return
-    save_progress_json(export_backup(conn))
+        return None
+    try:
+        save_progress_json(export_backup(conn))
+        return None
+    except Exception as exc:  # noqa: BLE001 — surface sync errors to UI
+        return str(exc)
 
 
 def ensure_ready(db_path: Path | None = None) -> sqlite3.Connection:
@@ -268,22 +275,27 @@ def ensure_ready(db_path: Path | None = None) -> sqlite3.Connection:
         path = Path("/tmp/phd_tracker_progress.db")
 
     conn = init_db(connect(path))
-    seed = load_seed()
-    desired_version = str(seed.get("meta", {}).get("seed_version", ""))
-    current_version = get_meta(conn).get("seed_version", "") if is_seeded(conn) else ""
 
+    # Important: do NOT reload from Gist on every Streamlit rerun — that wiped
+    # in-progress local edits when sync lagged. Only hydrate when DB is empty.
+    if is_seeded(conn):
+        return conn
+
+    seed = load_seed()
     restored = False
     if cloud_configured():
-        remote = load_progress_json()
+        try:
+            remote = load_progress_json()
+        except Exception:
+            remote = None
         if remote and remote.get("tasks"):
             import_backup(conn, remote)
             restored = True
 
     if not restored:
-        if not is_seeded(conn) or (desired_version and desired_version != current_version):
-            seed_database(conn, seed, force=is_seeded(conn))
-            if cloud_configured():
-                persist_cloud(conn)
+        seed_database(conn, seed, force=False)
+        if cloud_configured():
+            persist_cloud(conn)
     return conn
 
 
@@ -380,7 +392,22 @@ def update_task(
         ),
     )
     conn.commit()
-    persist_cloud(conn)
+    err = persist_cloud(conn)
+    if err:
+        try:
+            import streamlit as st
+
+            st.session_state["cloud_sync_error"] = err
+        except Exception:
+            pass
+    else:
+        try:
+            import streamlit as st
+
+            st.session_state.pop("cloud_sync_error", None)
+            st.session_state["cloud_sync_ok"] = True
+        except Exception:
+            pass
 
 
 def set_subtask_done(conn: sqlite3.Connection, subtask_id: int, done: bool) -> str:
