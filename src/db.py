@@ -263,6 +263,77 @@ def persist_cloud(conn: sqlite3.Connection) -> str | None:
         return str(exc)
 
 
+def _progress_snapshot(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    """Index current progress by track_key and title for migrations."""
+    snap: dict[str, dict[str, Any]] = {}
+    for t in list_tasks(conn):
+        payload = {
+            "status": t["status"],
+            "progress": t["progress"],
+            "notes": t.get("notes") or "",
+            "personal_deadline": t.get("personal_deadline"),
+            "official_deadline": t.get("official_deadline"),
+            "subtasks": {
+                s["title"]: bool(s["done"]) for s in list_subtasks(conn, t["id"])
+            },
+        }
+        snap[t["title"]] = payload
+        if t.get("track_key"):
+            snap[str(t["track_key"])] = payload
+    return snap
+
+
+def _apply_progress_snapshot(conn: sqlite3.Connection, snap: dict[str, dict[str, Any]]) -> None:
+    for t in list_tasks(conn):
+        payload = None
+        if t.get("track_key") and str(t["track_key"]) in snap:
+            payload = snap[str(t["track_key"])]
+        elif t["title"] in snap:
+            payload = snap[t["title"]]
+        if not payload:
+            continue
+        conn.execute(
+            """
+            UPDATE tasks
+            SET status = ?, progress = ?, notes = ?,
+                personal_deadline = ?, official_deadline = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                payload.get("status", "todo"),
+                int(payload.get("progress") or 0),
+                payload.get("notes") or "",
+                payload.get("personal_deadline"),
+                payload.get("official_deadline"),
+                _utc_now(),
+                t["id"],
+            ),
+        )
+        done_map = payload.get("subtasks") or {}
+        for s in list_subtasks(conn, t["id"]):
+            if s["title"] in done_map:
+                conn.execute(
+                    "UPDATE subtasks SET done = ? WHERE id = ?",
+                    (1 if done_map[s["title"]] else 0, s["id"]),
+                )
+    conn.commit()
+
+
+def migrate_seed_if_needed(conn: sqlite3.Connection, seed: dict[str, Any] | None = None) -> bool:
+    """Rebuild task list from seed when seed_version changes; keep progress."""
+    data = seed or load_seed()
+    desired = str(data.get("meta", {}).get("seed_version", ""))
+    current = get_meta(conn).get("seed_version", "") if is_seeded(conn) else ""
+    if not desired or current == desired:
+        return False
+    snap = _progress_snapshot(conn) if is_seeded(conn) else {}
+    seed_database(conn, data, force=True)
+    if snap:
+        _apply_progress_snapshot(conn, snap)
+    persist_cloud(conn)
+    return True
+
+
 def ensure_ready(db_path: Path | None = None) -> sqlite3.Connection:
     # On Streamlit Cloud the repo filesystem is ephemeral — keep DB in /tmp
     try:
@@ -275,27 +346,25 @@ def ensure_ready(db_path: Path | None = None) -> sqlite3.Connection:
         path = Path("/tmp/phd_tracker_progress.db")
 
     conn = init_db(connect(path))
-
-    # Important: do NOT reload from Gist on every Streamlit rerun — that wiped
-    # in-progress local edits when sync lagged. Only hydrate when DB is empty.
-    if is_seeded(conn):
-        return conn
-
     seed = load_seed()
-    restored = False
-    if cloud_configured():
-        try:
-            remote = load_progress_json()
-        except Exception:
-            remote = None
-        if remote and remote.get("tasks"):
-            import_backup(conn, remote)
-            restored = True
 
-    if not restored:
-        seed_database(conn, seed, force=False)
+    # Hydrate empty DB once (cold start), then migrate IDs/structure if needed.
+    if not is_seeded(conn):
+        restored = False
         if cloud_configured():
-            persist_cloud(conn)
+            try:
+                remote = load_progress_json()
+            except Exception:
+                remote = None
+            if remote and remote.get("tasks"):
+                import_backup(conn, remote)
+                restored = True
+        if not restored:
+            seed_database(conn, seed, force=False)
+            if cloud_configured():
+                persist_cloud(conn)
+
+    migrate_seed_if_needed(conn, seed)
     return conn
 
 
@@ -324,7 +393,7 @@ def list_tasks(
         params.append(status)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     rows = conn.execute(
-        f"SELECT * FROM tasks {where} ORDER BY personal_deadline IS NULL, personal_deadline, id",
+        f"SELECT * FROM tasks {where} ORDER BY phase, id",
         params,
     ).fetchall()
     return [dict(r) for r in rows]

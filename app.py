@@ -447,26 +447,43 @@ def page_settings(conn) -> None:
 
 def require_password() -> bool:
     """Optional app password from Streamlit secrets [auth].password."""
+    import hashlib
+
     try:
         pwd = st.secrets.get("auth", {}).get("password")
     except Exception:
         pwd = None
     if not pwd:
         return True
+
+    expected = str(pwd).strip()
+    token = hashlib.sha256(f"phd-tracker::{expected}".encode("utf-8")).hexdigest()[:32]
+
     if st.session_state.get("authed"):
         return True
 
-    expected = str(pwd).strip()
+    # Remember across refreshes via URL query param (same browser / bookmark).
+    if st.query_params.get("auth") == token:
+        st.session_state["authed"] = True
+        return True
+
     st.title("PhD Tracker")
-    st.caption("Введите пароль из Streamlit Secrets → [auth] password")
     with st.form("login_form"):
         entered = st.text_input("Пароль", type="password")
+        remember = st.checkbox("Запомнить на этом устройстве", value=True)
         submitted = st.form_submit_button("Войти")
     if submitted:
         if entered.strip() == expected:
             st.session_state["authed"] = True
+            if remember:
+                st.query_params["auth"] = token
+            else:
+                st.query_params.pop("auth", None)
             st.rerun()
-        st.error("Неверный пароль. Это не GitHub-токен ghp_..., а строка password из блока [auth].")
+        st.error(
+            "Неверный пароль. Это не GitHub-токен ghp_..., "
+            "а строка password из блока [auth]."
+        )
     return False
 
 
@@ -494,6 +511,10 @@ def main() -> None:
             st.error(f"Облако не сохранило: {st.session_state['cloud_sync_error']}")
         elif cloud_configured() and st.session_state.get("cloud_sync_ok"):
             st.caption("Облако: сохранено")
+        if st.button("Выйти"):
+            st.session_state.pop("authed", None)
+            st.query_params.pop("auth", None)
+            st.rerun()
 
     if page == "Дашборд":
         page_dashboard(conn)
